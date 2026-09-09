@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STATE="${LID_AWAKE_STATE:-$HOME/.lid-awake}"
+DEFAULT_SLEEP=5
+
+usage() {
+  cat <<'EOF'
+lid-awake — keep a MacBook awake with the lid closed on battery
+
+Usage:
+  lid-awake           Toggle stay-awake on/off
+  lid-awake on        Enable
+  lid-awake off       Restore saved sleep settings
+  lid-awake status    Show current state
+  lid-awake help      Show this help
+
+Requires macOS and sudo (pmset). Only battery settings are changed.
+Do not leave this on in a bag — a closed lid traps heat.
+EOF
+}
+
+die() {
+  echo "❌ $*" >&2
+  exit 1
+}
+
+sleep_disabled() {
+  pmset -g | awk '/SleepDisabled/ { gsub(/[^0-9]/, ""); print; exit }'
+}
+
+battery_sleep() {
+  pmset -g custom | awk '
+    /^Battery Power:/ { in_batt = 1; next }
+    /^[A-Z]/ { in_batt = 0 }
+    in_batt && $1 == "sleep" { print $2; exit }
+  '
+}
+
+is_on() {
+  [[ "$(sleep_disabled)" == "1" ]]
+}
+
+enable_awake() {
+  if is_on; then
+    echo "☕️ Lid-closed stay-awake already ON (battery)"
+    return
+  fi
+  local current
+  current="$(battery_sleep)"
+  current="${current:-$DEFAULT_SLEEP}"
+  echo "$current" > "$STATE"
+  sudo pmset -b sleep 0 disablesleep 1
+  echo "☕️ Lid-closed stay-awake ON (battery)"
+  echo "   sleep 0, disablesleep 1 — don't leave this on in a bag"
+}
+
+disable_awake() {
+  if ! is_on; then
+    echo "😴 Lid-closed stay-awake already OFF"
+    return
+  fi
+  local restore="$DEFAULT_SLEEP"
+  if [[ -f "$STATE" ]]; then
+    restore="$(cat "$STATE")"
+    rm -f "$STATE"
+  fi
+  [[ "$restore" =~ ^[0-9]+$ ]] || restore="$DEFAULT_SLEEP"
+  sudo pmset -b sleep "$restore" disablesleep 0
+  echo "😴 Lid-closed stay-awake OFF"
+  echo "   Restored battery sleep to ${restore} min, disablesleep 0"
+}
+
+show_status() {
+  local batt
+  batt="$(battery_sleep)"
+  batt="${batt:-unknown}"
+  if is_on; then
+    echo "☕️ Lid-closed stay-awake is ON (battery)"
+    echo "   sleep 0, disablesleep 1"
+  else
+    echo "😴 Lid-closed stay-awake is OFF"
+    echo "   battery sleep ${batt} min, disablesleep 0"
+  fi
+}
+
+[[ "$(uname -s)" == "Darwin" ]] || die "lid-awake only runs on macOS"
+
+command -v pmset >/dev/null || die "pmset not found"
+
+case "${1:-toggle}" in
+  on) enable_awake ;;
+  off) disable_awake ;;
+  status) show_status ;;
+  toggle) if is_on; then disable_awake; else enable_awake; fi ;;
+  help|-h|--help) usage ;;
+  *)
+    usage >&2
+    exit 1
+    ;;
+esac
