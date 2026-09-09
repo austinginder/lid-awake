@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- Filled disc so the mark reads at 18px in the menu bar and fills icns slots. -->
+  <circle cx="32" cy="32" r="30" fill="#C4782A"/>
+  <g fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round">
+    <path d="M24 12 q2 5 0 10"/>
+    <path d="M32 10 q2 6 0 12"/>
+    <path d="M40 12 q2 5 0 10"/>
+  </g>
+  <path d="M18 26 h24 l-3 20 a9 9 0 0 1 -18 0 z" fill="#ffffff"/>
+  <path d="M42 30 h5 a7 7 0 0 1 0 14 h-7" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -6,7 +6,7 @@ Keep a MacBook awake with the lid closed, even on battery.
 
 ## Install
 
-Nothing to compile. It is a bash script wrapping `pmset`.
+The CLI is a bash script. The menu bar app is compiled on your Mac.
 
 ```bash
 git clone https://github.com/austinginder/lid-awake.git
@@ -20,7 +20,7 @@ Run it from the clone:
 ./lid-awake
 ```
 
-Or copy it onto your PATH:
+Or copy the CLI (and menu bar sources) onto your PATH:
 
 ```bash
 sudo make install
@@ -35,6 +35,7 @@ make install PREFIX="$(brew --prefix)"
 Uninstall:
 
 ```bash
+lid-awake menubar disable   # if you enabled the menu bar
 sudo make uninstall
 ```
 
@@ -61,7 +62,21 @@ Run it again to restore:
    Restored battery sleep to 5 min, disablesleep 0
 ```
 
-`pmset` needs sudo, so macOS will ask for your password.
+`pmset` needs admin access. In Terminal that is `sudo`. From the menu bar, macOS shows a password dialog.
+
+## Menu bar
+
+Nothing extra to download. This compiles a tiny native app with `clang` (Command Line Tools — Homebrew users already have them), installs it to `~/Applications`, and launches it. No notarization.
+
+```bash
+./lid-awake menubar enable
+```
+
+Look for the coffee-cup icon. Full color means stay-awake is on; gray means off. The menu can toggle it and optionally launch at login.
+
+```bash
+lid-awake menubar disable
+```
 
 ## Warning
 

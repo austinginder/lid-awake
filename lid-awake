@@ -3,19 +3,24 @@ set -euo pipefail
 
 STATE="${LID_AWAKE_STATE:-$HOME/.lid-awake}"
 DEFAULT_SLEEP=5
+MENUBAR_VERSION="1.0.0"
+MENUBAR_APP_PATH="$HOME/Applications/Lid Awake.app"
 
 usage() {
   cat <<'EOF'
 lid-awake — keep a MacBook awake with the lid closed on battery
 
 Usage:
-  lid-awake           Toggle stay-awake on/off
-  lid-awake on        Enable
-  lid-awake off       Restore saved sleep settings
-  lid-awake status    Show current state
-  lid-awake help      Show this help
+  lid-awake                 Toggle stay-awake on/off
+  lid-awake on              Enable
+  lid-awake off             Restore saved sleep settings
+  lid-awake status          Show current state
+  lid-awake menubar enable  Build, install, and launch the menu bar app
+  lid-awake menubar disable Quit and remove the menu bar app
+  lid-awake help            Show this help
 
-Requires macOS and sudo (pmset). Only battery settings are changed.
+Requires macOS. pmset needs admin access (sudo in Terminal, or a password
+dialog from the menu bar). Only battery settings are changed.
 Do not leave this on in a bag — a closed lid traps heat.
 EOF
 }
@@ -23,6 +28,17 @@ EOF
 die() {
   echo "❌ $*" >&2
   exit 1
+}
+
+resolve_script_path() {
+  local source="${BASH_SOURCE[0]}"
+  while [[ -L "$source" ]]; do
+    local dir
+    dir="$(cd "$(dirname "$source")" && pwd)"
+    source="$(readlink "$source")"
+    [[ "$source" != /* ]] && source="$dir/$source"
+  done
+  echo "$(cd "$(dirname "$source")" && pwd)/$(basename "$source")"
 }
 
 sleep_disabled() {
@@ -41,6 +57,14 @@ is_on() {
   [[ "$(sleep_disabled)" == "1" ]]
 }
 
+run_pmset() {
+  if [[ "${LID_AWAKE_GUI:-}" == "1" ]] || [[ ! -t 0 ]]; then
+    osascript -e "do shell script \"pmset -b $*\" with administrator privileges with prompt \"Lid Awake wants to change power settings.\"" >/dev/null
+  else
+    sudo pmset -b "$@"
+  fi
+}
+
 enable_awake() {
   if is_on; then
     echo "☕️ Lid-closed stay-awake already ON (battery)"
@@ -50,7 +74,7 @@ enable_awake() {
   current="$(battery_sleep)"
   current="${current:-$DEFAULT_SLEEP}"
   echo "$current" > "$STATE"
-  sudo pmset -b sleep 0 disablesleep 1
+  run_pmset sleep 0 disablesleep 1
   echo "☕️ Lid-closed stay-awake ON (battery)"
   echo "   sleep 0, disablesleep 1 — don't leave this on in a bag"
 }
@@ -66,7 +90,7 @@ disable_awake() {
     rm -f "$STATE"
   fi
   [[ "$restore" =~ ^[0-9]+$ ]] || restore="$DEFAULT_SLEEP"
-  sudo pmset -b sleep "$restore" disablesleep 0
+  run_pmset sleep "$restore" disablesleep 0
   echo "😴 Lid-closed stay-awake OFF"
   echo "   Restored battery sleep to ${restore} min, disablesleep 0"
 }
@@ -75,6 +99,16 @@ show_status() {
   local batt
   batt="$(battery_sleep)"
   batt="${batt:-unknown}"
+  if [[ "${1:-}" == "--porcelain" ]]; then
+    if is_on; then
+      echo "state=on"
+      echo "sleep=0"
+    else
+      echo "state=off"
+      echo "sleep=${batt}"
+    fi
+    return
+  fi
   if is_on; then
     echo "☕️ Lid-closed stay-awake is ON (battery)"
     echo "   sleep 0, disablesleep 1"
@@ -84,6 +118,160 @@ show_status() {
   fi
 }
 
+menubar_src_dir() {
+  local script_dir
+  script_dir="$(cd "$(dirname "$(resolve_script_path)")" && pwd)"
+  if [[ -f "$script_dir/menubar/Sources/main.m" ]]; then
+    echo "$script_dir/menubar"
+    return
+  fi
+  if [[ -f "$script_dir/../share/lid-awake/menubar/Sources/main.m" ]]; then
+    (cd "$script_dir/../share/lid-awake/menubar" && pwd)
+    return
+  fi
+  return 1
+}
+
+menubar_installed_version() {
+  /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" \
+    "$MENUBAR_APP_PATH/Contents/Info.plist" 2>/dev/null || true
+}
+
+menubar_is_enabled() {
+  [[ -d "$MENUBAR_APP_PATH" ]]
+}
+
+menubar_usage() {
+  cat <<EOF
+Usage: lid-awake menubar <subcommand>
+
+Build a native macOS menu bar app on this machine (clang + system
+frameworks, no notarization). The icon shows whether lid-closed stay-awake
+is on, and the menu can toggle it.
+
+Subcommands:
+  enable     Build, install, and launch the menu bar app (also updates it)
+  disable    Quit and remove the menu bar app
+
+EOF
+  local installed
+  installed="$(menubar_installed_version)"
+  if menubar_is_enabled; then
+    echo "Currently: enabled (v${installed:-unknown})"
+  else
+    echo "Currently: disabled"
+  fi
+}
+
+menubar_enable() {
+  if ! command -v clang >/dev/null || ! xcode-select -p >/dev/null 2>&1; then
+    die "Apple Command Line Tools are required to build the menu bar app.
+   Install them with: xcode-select --install"
+  fi
+
+  local src
+  src="$(menubar_src_dir)" || die "Menu bar sources not found. Run this from a lid-awake checkout, or reinstall with make install."
+
+  local script_path
+  script_path="$(resolve_script_path)"
+
+  local build_dir
+  build_dir="$(mktemp -d)"
+  trap "rm -rf $(printf '%q' "$build_dir")" EXIT
+
+  echo "🛠️  Building Lid Awake menu bar v${MENUBAR_VERSION}..."
+
+  cp "$src/Sources/main.m" "$build_dir/main.m"
+  sed "s/__MENUBAR_VERSION__/${MENUBAR_VERSION}/g" "$src/Resources/Info.plist" > "$build_dir/Info.plist"
+  cp "$src/Resources/Assets/lid-awake.svg" "$build_dir/lid-awake.svg"
+
+  if ! clang \
+      -fobjc-arc \
+      -O2 \
+      -Wall \
+      -Wextra \
+      -mmacosx-version-min=13.0 \
+      -DLID_AWAKE_BIN="\"${script_path}\"" \
+      -framework Cocoa \
+      -framework CoreImage \
+      -framework ServiceManagement \
+      "$build_dir/main.m" \
+      -o "$build_dir/LidAwake"; then
+    die "Failed to compile the menu bar app."
+  fi
+
+  local iconset_dir="$build_dir/LidAwake.iconset"
+  mkdir -p "$iconset_dir"
+  if ! sips -s format png -z 16 16 "$build_dir/lid-awake.svg" \
+        --out "$build_dir/icon-probe.png" >/dev/null 2>&1 \
+      || ! sips -g pixelWidth "$build_dir/icon-probe.png" >/dev/null 2>&1; then
+    die "This macOS could not rasterize the menu bar icon (SVG via sips)."
+  fi
+  local spec size name
+  for spec in \
+      "16 icon_16x16.png" \
+      "32 icon_16x16@2x.png" \
+      "32 icon_32x32.png" \
+      "64 icon_32x32@2x.png" \
+      "128 icon_128x128.png" \
+      "256 icon_128x128@2x.png" \
+      "256 icon_256x256.png" \
+      "512 icon_256x256@2x.png" \
+      "512 icon_512x512.png" \
+      "1024 icon_512x512@2x.png"; do
+    size="${spec%% *}"
+    name="${spec#* }"
+    sips -s format png -z "$size" "$size" "$build_dir/lid-awake.svg" \
+      --out "$iconset_dir/$name" >/dev/null
+  done
+  iconutil -c icns "$iconset_dir" -o "$build_dir/LidAwake.icns"
+
+  pkill -x LidAwake 2>/dev/null || true
+  pkill -x "Lid Awake" 2>/dev/null || true
+  rm -rf "$MENUBAR_APP_PATH"
+  mkdir -p "$MENUBAR_APP_PATH/Contents/MacOS" "$MENUBAR_APP_PATH/Contents/Resources/Assets"
+  cp "$build_dir/LidAwake" "$MENUBAR_APP_PATH/Contents/MacOS/LidAwake"
+  cp "$build_dir/LidAwake.icns" "$MENUBAR_APP_PATH/Contents/Resources/LidAwake.icns"
+  cp "$build_dir/lid-awake.svg" "$MENUBAR_APP_PATH/Contents/Resources/Assets/"
+  cp "$build_dir/Info.plist" "$MENUBAR_APP_PATH/Contents/Info.plist"
+
+  codesign --force --deep --sign - "$MENUBAR_APP_PATH" 2>/dev/null || true
+  rm -rf "$build_dir"
+  trap - EXIT
+
+  open "$MENUBAR_APP_PATH"
+
+  echo ""
+  echo "✅ Lid Awake is in the menu bar"
+  echo "   Look for the coffee-cup icon."
+  echo "   Remove it anytime with: lid-awake menubar disable"
+}
+
+menubar_disable() {
+  if ! menubar_is_enabled; then
+    echo "The menu bar app is not enabled."
+    return 0
+  fi
+  pkill -x LidAwake 2>/dev/null || true
+  pkill -x "Lid Awake" 2>/dev/null || true
+  "$MENUBAR_APP_PATH/Contents/MacOS/LidAwake" unregister 2>/dev/null || true
+  "$MENUBAR_APP_PATH/Contents/MacOS/Lid Awake" unregister 2>/dev/null || true
+  rm -rf "$MENUBAR_APP_PATH"
+  echo "✅ Lid Awake menu bar disabled and removed."
+}
+
+menubar_cmd() {
+  case "${1:-}" in
+    enable) menubar_enable ;;
+    disable) menubar_disable ;;
+    help|-h|--help|"") menubar_usage ;;
+    *)
+      menubar_usage >&2
+      exit 1
+      ;;
+  esac
+}
+
 [[ "$(uname -s)" == "Darwin" ]] || die "lid-awake only runs on macOS"
 
 command -v pmset >/dev/null || die "pmset not found"
@@ -91,7 +279,8 @@ command -v pmset >/dev/null || die "pmset not found"
 case "${1:-toggle}" in
   on) enable_awake ;;
   off) disable_awake ;;
-  status) show_status ;;
+  status) show_status "${2:-}" ;;
+  menubar) menubar_cmd "${2:-}" ;;
   toggle) if is_on; then disable_awake; else enable_awake; fi ;;
   help|-h|--help) usage ;;
   *)
