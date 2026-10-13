@@ -2,7 +2,7 @@ PREFIX ?= /usr/local
 BINDIR ?= $(PREFIX)/bin
 SHAREDIR ?= $(PREFIX)/share/lid-awake
 
-.PHONY: install uninstall
+.PHONY: install uninstall zip
 
 install:
 	install -d $(DESTDIR)$(BINDIR)
@@ -16,3 +16,7 @@ install:
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/lid-awake
 	rm -rf $(DESTDIR)$(SHAREDIR)
+
+# The release asset: everything under lid-awake/, from the committed HEAD.
+zip:
+	git archive --format=zip --prefix=lid-awake/ -o lid-awake.zip HEAD

@@ -288,13 +288,22 @@ update_install() {
   tmp="$(mktemp -d)"
   trap "rm -rf $(printf '%q' "$tmp")" EXIT
 
+  # The release's lid-awake.zip is what GitHub counts as a download. A release
+  # published without one still updates, from GitHub's source tarball.
+  local src new_version
   echo "⬇️  Downloading v${latest}..."
-  curl -fsSL --max-time 120 -o "$tmp/release.tar.gz" \
-    "https://github.com/${REPO}/archive/refs/tags/v${latest}.tar.gz" \
-    || die "Download failed. Check your connection and try again."
-  tar -xzf "$tmp/release.tar.gz" -C "$tmp" || die "Could not unpack the download."
-
-  local src="$tmp/lid-awake-${latest}" new_version
+  mkdir -p "$tmp/unpacked"
+  if curl -fsSL --max-time 120 -o "$tmp/lid-awake.zip" \
+      "https://github.com/${REPO}/releases/download/v${latest}/lid-awake.zip"; then
+    unzip -q "$tmp/lid-awake.zip" -d "$tmp/unpacked" || die "Could not unpack the download."
+    src="$tmp/unpacked/lid-awake"
+  else
+    curl -fsSL --max-time 120 -o "$tmp/release.tar.gz" \
+      "https://github.com/${REPO}/archive/refs/tags/v${latest}.tar.gz" \
+      || die "Download failed. Check your connection and try again."
+    tar -xzf "$tmp/release.tar.gz" -C "$tmp/unpacked" || die "Could not unpack the download."
+    src="$tmp/unpacked/lid-awake-${latest}"
+  fi
   [[ -f "$src/lid-awake" ]] || die "The download does not contain lid-awake."
   bash -n "$src/lid-awake" || die "The downloaded lid-awake did not pass a syntax check."
   new_version="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$src/lid-awake" | head -n 1)"
