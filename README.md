@@ -6,30 +6,24 @@ Keep a MacBook awake with the lid closed, even on battery.
 
 ## Install
 
-The CLI is a bash script. The menu bar app is compiled on your Mac.
+The CLI is a bash script. The menu bar app is compiled on your Mac. Download the latest release and install both:
 
 ```bash
-git clone https://github.com/austinginder/lid-awake.git
+curl -fsSLO https://github.com/austinginder/lid-awake/releases/latest/download/lid-awake.zip
+unzip lid-awake.zip
 cd lid-awake
-```
-
-Run it from the clone:
-
-```bash
-./lid-awake
-```
-
-Or copy the CLI (and menu bar sources) onto your PATH:
-
-```bash
 sudo make install
 ```
 
-That installs to `/usr/local/bin/lid-awake`. Homebrew users can install into the Homebrew prefix instead:
+That puts the CLI in `/usr/local/bin/lid-awake` and the menu bar sources in `/usr/local/share/lid-awake`. Homebrew users can install into the Homebrew prefix instead, without `sudo`:
 
 ```bash
 make install PREFIX="$(brew --prefix)"
 ```
+
+Or skip the install and run it from the unzipped folder: `./lid-awake`.
+
+To work on Lid Awake itself, clone the repo (`git clone https://github.com/austinginder/lid-awake.git`) and keep it current with `git pull`.
 
 Uninstall:
 
@@ -72,7 +66,7 @@ If something else turns `disablesleep` back off while Lid Awake is on, `lid-awak
 Nothing extra to download. This compiles a tiny native app with `clang` (Command Line Tools — Homebrew users already have them), installs it to `~/Applications`, and launches it. No notarization.
 
 ```bash
-./lid-awake menubar enable
+lid-awake menubar enable
 ```
 
 Look for the coffee-cup icon. Full color means stay-awake is on; gray means off. The menu can toggle it and optionally launch at login.
@@ -88,9 +82,9 @@ lid-awake update --check   # is there a newer release?
 lid-awake update           # install it
 ```
 
-`lid-awake update` downloads the latest [release](https://github.com/austinginder/lid-awake/releases) from GitHub, replaces the CLI and the menu bar sources wherever they are installed (with `sudo` if that folder needs it), and rebuilds the menu bar app if you use it. A git clone is left alone; update it with `git pull`, then `lid-awake menubar enable`.
+`lid-awake update` downloads the latest [release](https://github.com/austinginder/lid-awake/releases)'s `lid-awake.zip` from GitHub, replaces the CLI and the menu bar sources wherever they are installed (with `sudo` if that folder needs it), and rebuilds the menu bar app if you use it. A git clone is left alone; update it with `git pull`, then `lid-awake menubar enable`.
 
-Checking costs one HEAD request to GitHub, at most once a day:
+Checking costs one HEAD request to GitHub, at most once a day, and downloads nothing:
 
 - When you run `lid-awake` in a terminal, it checks in the background and mentions a new release after the command's own output. Set `LID_AWAKE_NO_UPDATE_CHECK=1` to turn that off.
 - The menu bar app checks when it starts and once a day. Its version line becomes **Update Lid Awake to v…**, which runs `lid-awake update` in Terminal.
