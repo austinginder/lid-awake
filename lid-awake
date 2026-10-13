@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+VERSION="1.0.0"
+REPO="austinginder/lid-awake"
 STATE="${LID_AWAKE_STATE:-$HOME/.lid-awake}"
+UPDATE_CACHE="$HOME/Library/Caches/lid-awake/latest-version"
+UPDATE_INTERVAL=86400
 DEFAULT_SLEEP=5
-MENUBAR_VERSION="1.0.0"
 MENUBAR_APP_PATH="$HOME/Applications/Lid Awake.app"
 
 usage() {
@@ -15,8 +18,11 @@ Usage:
   lid-awake on              Enable
   lid-awake off             Restore saved sleep settings
   lid-awake status          Show current state
+  lid-awake update          Install the latest release from GitHub
+  lid-awake update --check  Check for a new release without installing
   lid-awake menubar enable  Build, install, and launch the menu bar app
   lid-awake menubar disable Quit and remove the menu bar app
+  lid-awake version         Show the installed version
   lid-awake help            Show this help
 
 Requires macOS. pmset needs admin access (sudo in Terminal, or a password
@@ -151,6 +157,7 @@ show_status() {
       echo "state=off"
       echo "sleep=${batt}"
     fi
+    echo "version=${VERSION}"
     return
   fi
   if is_on; then
@@ -166,6 +173,187 @@ show_status() {
     fi
   fi
 }
+
+# --- Updates -----------------------------------------------------------------
+
+valid_version() {
+  [[ "${1:-}" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]
+}
+
+# True when version $1 is newer than $2, comparing each part as a number.
+version_gt() {
+  local IFS=.
+  local -a a=($1) b=($2)
+  local i x y
+  for i in 0 1 2; do
+    x="${a[i]:-0}"
+    y="${b[i]:-0}"
+    if ((10#$x > 10#$y)); then return 0; fi
+    if ((10#$x < 10#$y)); then return 1; fi
+  done
+  return 1
+}
+
+# GitHub redirects releases/latest to releases/tag/v<version>. One HEAD
+# request, no API token, no rate limit, no JSON.
+fetch_latest_version() {
+  local location tag
+  location="$(curl -fsSI -o /dev/null -w '%{redirect_url}' --max-time 10 \
+    "https://github.com/${REPO}/releases/latest")" || return 1
+  tag="${location##*/}"
+  valid_version "${tag#v}" || return 1
+  echo "${tag#v}"
+}
+
+write_update_cache() {
+  mkdir -p "$(dirname "$UPDATE_CACHE")"
+  printf '%s\n%s\n' "$(date +%s)" "$1" > "$UPDATE_CACHE.tmp.$$"
+  mv -f "$UPDATE_CACHE.tmp.$$" "$UPDATE_CACHE"
+}
+
+refresh_update_cache() {
+  local latest
+  latest="$(fetch_latest_version)" || return 1
+  write_update_cache "$latest"
+}
+
+# After a command run in a terminal: say if a newer release is known, and
+# refresh that knowledge in the background at most once a day.
+maybe_notify_update() {
+  [[ -t 1 ]] || return 0
+  [[ "${LID_AWAKE_NO_UPDATE_CHECK:-}" == "1" ]] && return 0
+  local checked=0 latest=""
+  if [[ -f "$UPDATE_CACHE" ]]; then
+    { read -r checked && read -r latest; } < "$UPDATE_CACHE" || true
+  fi
+  [[ "$checked" =~ ^[0-9]+$ ]] || checked=0
+  if (($(date +%s) - checked >= UPDATE_INTERVAL)); then
+    (trap '' HUP; refresh_update_cache) >/dev/null 2>&1 &
+  fi
+  if valid_version "$latest" && version_gt "$latest" "$VERSION"; then
+    echo ""
+    echo "⬆️  Lid Awake v${latest} is available (you have v${VERSION}). Run: lid-awake update"
+  fi
+  return 0
+}
+
+update_check() {
+  local latest
+  latest="$(fetch_latest_version)" || die "Could not find the latest release on GitHub."
+  write_update_cache "$latest"
+  if version_gt "$latest" "$VERSION"; then
+    echo "⬆️  Lid Awake v${latest} is available (you have v${VERSION})"
+    echo "   Release notes: https://github.com/${REPO}/releases/tag/v${latest}"
+    echo "   Install it with: lid-awake update"
+  else
+    echo "✅ Lid Awake v${VERSION} is up to date"
+  fi
+}
+
+update_install() {
+  echo "🔎 Checking for the latest release of Lid Awake..."
+  local latest
+  latest="$(fetch_latest_version)" || die "Could not find the latest release on GitHub."
+  write_update_cache "$latest"
+
+  local script_path script_dir menubar_dir=""
+  script_path="$(resolve_script_path)"
+  script_dir="$(dirname "$script_path")"
+  menubar_dir="$(menubar_src_dir)" || menubar_dir=""
+
+  if ! version_gt "$latest" "$VERSION"; then
+    echo "✅ Lid Awake v${VERSION} is up to date"
+    if menubar_is_enabled && [[ "$(menubar_installed_version)" != "$VERSION" ]]; then
+      echo "   The menu bar app is older than the CLI. Rebuilding it..."
+      echo ""
+      menubar_enable
+    fi
+    return
+  fi
+
+  if [[ -e "$script_dir/.git" ]]; then
+    echo "⬆️  Lid Awake v${latest} is available (you have v${VERSION})"
+    echo "   This copy is a git checkout. Update it with:"
+    echo "   git -C $(printf '%q' "$script_dir") pull"
+    if menubar_is_enabled; then
+      echo "   then rebuild the menu bar app: lid-awake menubar enable"
+    fi
+    exit 1
+  fi
+
+  echo "   Installed: v${VERSION}"
+  echo "   Latest:    v${latest}"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap "rm -rf $(printf '%q' "$tmp")" EXIT
+
+  echo "⬇️  Downloading v${latest}..."
+  curl -fsSL --max-time 120 -o "$tmp/release.tar.gz" \
+    "https://github.com/${REPO}/archive/refs/tags/v${latest}.tar.gz" \
+    || die "Download failed. Check your connection and try again."
+  tar -xzf "$tmp/release.tar.gz" -C "$tmp" || die "Could not unpack the download."
+
+  local src="$tmp/lid-awake-${latest}" new_version
+  [[ -f "$src/lid-awake" ]] || die "The download does not contain lid-awake."
+  bash -n "$src/lid-awake" || die "The downloaded lid-awake did not pass a syntax check."
+  new_version="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$src/lid-awake" | head -n 1)"
+  [[ "$new_version" == "$latest" ]] \
+    || die "The download reports v${new_version:-unknown}, expected v${latest}."
+
+  # The new script goes in beside the old one and is renamed over it, so this
+  # running copy keeps reading the file it started from.
+  cat > "$tmp/install.sh" <<'INSTALL'
+set -euo pipefail
+src="$1" script="$2" menubar="$3"
+next="$(dirname "$script")/.lid-awake.next.$$"
+cp "$src/lid-awake" "$next"
+chmod 755 "$next"
+mv -f "$next" "$script"
+if [[ -n "$menubar" ]]; then
+  cp -R "$src/menubar/." "$menubar/"
+fi
+INSTALL
+
+  local needs_admin=0 file
+  [[ -w "$script_dir" ]] || needs_admin=1
+  if [[ -n "$menubar_dir" ]]; then
+    while IFS= read -r -d '' file; do
+      [[ -w "$file" ]] || needs_admin=1
+    done < <(find "$menubar_dir" -print0)
+  fi
+
+  echo "📦 Installing to ${script_path}..."
+  if ((needs_admin)); then
+    run_as_admin "Lid Awake wants to install an update." \
+      /bin/bash "$tmp/install.sh" "$src" "$script_path" "$menubar_dir"
+  else
+    /bin/bash "$tmp/install.sh" "$src" "$script_path" "$menubar_dir"
+  fi
+  rm -rf "$tmp"
+  trap - EXIT
+
+  echo "✅ Lid Awake updated to v${latest}"
+  echo "   Release notes: https://github.com/${REPO}/releases/tag/v${latest}"
+
+  if menubar_is_enabled; then
+    echo ""
+    "$script_path" menubar enable
+  fi
+}
+
+update_cmd() {
+  case "${1:-}" in
+    "") update_install ;;
+    --check) update_check ;;
+    *)
+      echo "Usage: lid-awake update [--check]" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# --- Menu bar ----------------------------------------------------------------
 
 menubar_src_dir() {
   local script_dir
@@ -207,6 +395,9 @@ EOF
   installed="$(menubar_installed_version)"
   if menubar_is_enabled; then
     echo "Currently: enabled (v${installed:-unknown})"
+    if [[ "$installed" != "$VERSION" ]]; then
+      echo "The CLI is v${VERSION}. Rebuild with: lid-awake menubar enable"
+    fi
   else
     echo "Currently: disabled"
   fi
@@ -232,10 +423,10 @@ menubar_enable() {
   build_dir="$(mktemp -d)"
   trap "rm -rf $(printf '%q' "$build_dir")" EXIT
 
-  echo "🛠️  Building Lid Awake menu bar v${MENUBAR_VERSION}..."
+  echo "🛠️  Building Lid Awake menu bar v${VERSION}..."
 
   cp "$src/Sources/main.m" "$build_dir/main.m"
-  sed "s/__MENUBAR_VERSION__/${MENUBAR_VERSION}/g" "$src/Resources/Info.plist" > "$build_dir/Info.plist"
+  sed "s/__MENUBAR_VERSION__/${VERSION}/g" "$src/Resources/Info.plist" > "$build_dir/Info.plist"
   cp "$src/Resources/Assets/lid-awake.svg" "$build_dir/lid-awake.svg"
 
   if ! clang \
@@ -330,14 +521,25 @@ menubar_cmd() {
 command -v pmset >/dev/null || die "pmset not found"
 
 case "${1:-toggle}" in
-  on) enable_awake ;;
-  off) disable_awake ;;
-  status) show_status "${2:-}" ;;
+  on) enable_awake; maybe_notify_update ;;
+  off) disable_awake; maybe_notify_update ;;
+  status)
+    show_status "${2:-}"
+    [[ "${2:-}" == "--porcelain" ]] || maybe_notify_update
+    ;;
+  update) update_cmd "${2:-}" ;;
   menubar) menubar_cmd "${2:-}" ;;
-  toggle) if is_on; then disable_awake; else enable_awake; fi ;;
+  toggle)
+    if is_on; then disable_awake; else enable_awake; fi
+    maybe_notify_update
+    ;;
+  version|-v|--version) echo "lid-awake ${VERSION}" ;;
   help|-h|--help) usage ;;
   *)
     usage >&2
     exit 1
     ;;
 esac
+
+# Stop here: an update renames a new copy over this file mid-run.
+exit

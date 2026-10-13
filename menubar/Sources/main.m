@@ -1,7 +1,8 @@
 // Lid Awake — macOS menu bar companion.
 //
 // Built on the user's machine by `lid-awake menubar enable` — clang + system
-// frameworks only. Status is read via `lid-awake status --porcelain`.
+// frameworks only. Status is read via `lid-awake status --porcelain`; updates
+// are checked against GitHub once a day and installed by `lid-awake update`.
 
 #import <Cocoa/Cocoa.h>
 #import <CoreImage/CoreImage.h>
@@ -11,12 +12,19 @@
 #define LID_AWAKE_BIN ""
 #endif
 
+static NSString *const kReleasesURL = @"https://github.com/austinginder/lid-awake/releases";
+static const NSTimeInterval kUpdateCheckInterval = 86400.0;
+
 typedef void (^CommandCompletion)(int status, NSString *output, NSError *error);
 
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
 @property(nonatomic, strong) NSStatusItem *statusItem;
 @property(nonatomic, strong) NSMenu *menu;
 @property(nonatomic, strong) NSTimer *refreshTimer;
+@property(nonatomic, strong) NSTimer *updateCheckTimer;
+@property(nonatomic, assign) CFAbsoluteTime lastUpdateCheck;
+@property(nonatomic, copy) NSString *appVersion;
+@property(nonatomic, copy) NSString *latestVersion;
 @property(nonatomic, assign) BOOL awakeOn;
 @property(nonatomic, assign) BOOL statesKnown;
 @property(nonatomic, assign) BOOL busy;
@@ -27,12 +35,14 @@ typedef void (^CommandCompletion)(int status, NSString *output, NSError *error);
 @property(nonatomic, strong) NSMenuItem *warningItem;
 @property(nonatomic, strong) NSMenuItem *toggleItem;
 @property(nonatomic, strong) NSMenuItem *launchItem;
+@property(nonatomic, strong) NSMenuItem *versionItem;
 @end
 
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+    self.appVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
     self.statusItem.visible = YES;
     [self loadStatusImages];
@@ -41,7 +51,7 @@ typedef void (^CommandCompletion)(int status, NSString *output, NSError *error);
 
     [[[NSWorkspace sharedWorkspace] notificationCenter]
         addObserver:self
-           selector:@selector(refreshStatus)
+           selector:@selector(didWake)
                name:NSWorkspaceDidWakeNotification
              object:nil];
 
@@ -53,6 +63,21 @@ typedef void (^CommandCompletion)(int status, NSString *output, NSError *error);
                                                        userInfo:nil
                                                         repeats:YES];
     self.refreshTimer.tolerance = 5.0;
+
+    // NSTimer stops counting while the Mac sleeps, so a 24 hour timer can take
+    // days on a laptop. Tick hourly and compare against the wall clock instead.
+    [self checkForUpdates];
+    self.updateCheckTimer = [NSTimer scheduledTimerWithTimeInterval:3600.0
+                                                             target:self
+                                                           selector:@selector(checkForUpdatesIfDue)
+                                                           userInfo:nil
+                                                            repeats:YES];
+    self.updateCheckTimer.tolerance = 600.0;
+}
+
+- (void)didWake {
+    [self refreshStatus];
+    [self checkForUpdatesIfDue];
 }
 
 - (void)menuWillOpen:(NSMenu *)menu {
@@ -90,6 +115,12 @@ typedef void (^CommandCompletion)(int status, NSString *output, NSError *error);
                                           keyEquivalent:@""];
     self.launchItem.target = self;
     [self.menu addItem:self.launchItem];
+
+    self.versionItem = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+    self.versionItem.target = self;
+    self.versionItem.enabled = NO;
+    self.versionItem.hidden = YES;
+    [self.menu addItem:self.versionItem];
 
     [self.menu addItem:[NSMenuItem separatorItem]];
 
@@ -130,6 +161,20 @@ typedef void (^CommandCompletion)(int status, NSString *output, NSError *error);
     self.launchItem.state = SMAppService.mainAppService.status == SMAppServiceStatusEnabled
                                 ? NSControlStateValueOn
                                 : NSControlStateValueOff;
+
+    if ([self updateAvailable]) {
+        self.versionItem.title = [NSString stringWithFormat:@"Update Lid Awake to v%@…", self.latestVersion];
+        self.versionItem.action = @selector(runUpdateInTerminal);
+        self.versionItem.enabled = YES;
+        self.versionItem.hidden = NO;
+    } else if (self.appVersion.length > 0) {
+        self.versionItem.title = [NSString stringWithFormat:@"Lid Awake v%@", self.appVersion];
+        self.versionItem.action = nil;
+        self.versionItem.enabled = NO;
+        self.versionItem.hidden = NO;
+    } else {
+        self.versionItem.hidden = YES;
+    }
 
     [self updateStatusButton];
 }
@@ -401,6 +446,101 @@ typedef void (^CommandCompletion)(int status, NSString *output, NSError *error);
     CGImageRelease(cgImage);
     return result;
 }
+
+#pragma mark - Updates
+
+- (void)checkForUpdatesIfDue {
+    if (CFAbsoluteTimeGetCurrent() - self.lastUpdateCheck >= kUpdateCheckInterval) {
+        [self checkForUpdates];
+    }
+}
+
+// GitHub redirects releases/latest to releases/tag/v<version>, so one HEAD
+// request answers it. No API token, no rate limit, no JSON.
+- (void)checkForUpdates {
+    self.lastUpdateCheck = CFAbsoluteTimeGetCurrent();
+    NSURL *url = [NSURL URLWithString:[kReleasesURL stringByAppendingString:@"/latest"]];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.HTTPMethod = @"HEAD";
+    request.timeoutInterval = 15.0;
+
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession]
+        dataTaskWithRequest:request
+          completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+              (void)data;
+              if (error || !response.URL) {
+                  return;
+              }
+              NSString *tag = response.URL.lastPathComponent;
+              if (![tag hasPrefix:@"v"] || tag.length < 2) {
+                  return;
+              }
+              NSString *version = [tag substringFromIndex:1];
+              dispatch_async(dispatch_get_main_queue(), ^{
+                  AppDelegate *strongSelf = weakSelf;
+                  if (!strongSelf) {
+                      return;
+                  }
+                  strongSelf.latestVersion = version;
+                  [strongSelf updateMenu];
+              });
+          }];
+    [task resume];
+}
+
+- (BOOL)updateAvailable {
+    if (self.appVersion.length == 0 || self.latestVersion.length == 0) {
+        return NO;
+    }
+    return [self compareVersion:self.latestVersion to:self.appVersion] == NSOrderedDescending;
+}
+
+// Numeric segment-by-segment comparison, so 1.10 > 1.9.
+- (NSComparisonResult)compareVersion:(NSString *)a to:(NSString *)b {
+    NSArray<NSString *> *aParts = [a componentsSeparatedByString:@"."];
+    NSArray<NSString *> *bParts = [b componentsSeparatedByString:@"."];
+    NSUInteger count = MAX(aParts.count, bParts.count);
+    for (NSUInteger i = 0; i < count; i++) {
+        NSInteger aValue = i < aParts.count ? aParts[i].integerValue : 0;
+        NSInteger bValue = i < bParts.count ? bParts[i].integerValue : 0;
+        if (aValue != bValue) {
+            return aValue > bValue ? NSOrderedDescending : NSOrderedAscending;
+        }
+    }
+    return NSOrderedSame;
+}
+
+// `lid-awake update` may ask for a sudo password and rebuilds this app, which
+// quits it partway through. That belongs in a real terminal. A .command file
+// opens in Terminal via Launch Services with no automation (TCC) prompt.
+- (void)runUpdateInTerminal {
+    NSString *executable = [self lidAwakePath];
+    if (!executable) {
+        [self showErrorWithTitle:@"Update Lid Awake"
+                         message:@"lid-awake not found. Download the latest release from GitHub."];
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:kReleasesURL]];
+        return;
+    }
+    NSString *quoted = [NSString stringWithFormat:@"'%@'",
+        [executable stringByReplacingOccurrencesOfString:@"'" withString:@"'\\''"]];
+    NSString *script = [NSString stringWithFormat:
+        @"#!/bin/zsh\n"
+         "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\"\n"
+         "%@ update\n", quoted];
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"lid-awake-update.command"];
+    NSError *error = nil;
+    if (![script writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+        [self showErrorWithTitle:@"Update Lid Awake" message:error.localizedDescription];
+        return;
+    }
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0755}
+                                     ofItemAtPath:path
+                                            error:nil];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:path]];
+}
+
+#pragma mark - Login item
 
 - (void)toggleLaunchAtLogin {
     SMAppService *service = SMAppService.mainAppService;
