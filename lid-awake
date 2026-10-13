@@ -20,7 +20,8 @@ Usage:
   lid-awake help            Show this help
 
 Requires macOS. pmset needs admin access (sudo in Terminal, or a password
-dialog from the menu bar). Only battery settings are changed.
+dialog from the menu bar). While on, the Mac does not sleep at all; the
+battery sleep timer is saved and restored, AC settings are left alone.
 Do not leave this on in a bag — a closed lid traps heat.
 EOF
 }
@@ -57,12 +58,37 @@ is_on() {
   [[ "$(sleep_disabled)" == "1" ]]
 }
 
-run_pmset() {
-  if [[ "${LID_AWAKE_GUI:-}" == "1" ]] || [[ ! -t 0 ]]; then
-    osascript -e "do shell script \"pmset -b $*\" with administrator privileges with prompt \"Lid Awake wants to change power settings.\"" >/dev/null
+saved_sleep() {
+  local saved=""
+  [[ -f "$STATE" ]] && saved="$(<"$STATE")"
+  [[ "$saved" =~ ^[0-9]+$ ]] && echo "$saved"
+  return 0
+}
+
+# Run a command as root: sudo in a terminal, the macOS password dialog from
+# the menu bar (or anything else without a TTY).
+run_as_admin() {
+  local prompt="$1"
+  shift
+  if [[ "$EUID" -eq 0 ]]; then
+    "$@"
+  elif [[ "${LID_AWAKE_GUI:-}" == "1" ]] || [[ ! -t 0 ]]; then
+    osascript - "$prompt" "$@" >/dev/null <<'APPLESCRIPT'
+on run argv
+  set command to ""
+  repeat with i from 2 to count of argv
+    set command to command & quoted form of (item i of argv) & " "
+  end repeat
+  do shell script command with administrator privileges with prompt (item 1 of argv)
+end run
+APPLESCRIPT
   else
-    sudo pmset -b "$@"
+    sudo "$@"
   fi
+}
+
+run_pmset() {
+  run_as_admin "Lid Awake wants to change power settings." "$(command -v pmset)" -b "$@"
 }
 
 enable_awake() {
@@ -70,27 +96,45 @@ enable_awake() {
     echo "☕️ Lid-closed stay-awake already ON (battery)"
     return
   fi
-  local current
+  local current saved
   current="$(battery_sleep)"
-  current="${current:-$DEFAULT_SLEEP}"
-  echo "$current" > "$STATE"
+  saved="$(saved_sleep)"
+  # A saved timer means the last session never restored it (disablesleep was
+  # reset some other way). Keep it rather than saving the 0 left behind.
+  if [[ ! "$current" =~ ^[0-9]+$ ]]; then
+    current="${saved:-$DEFAULT_SLEEP}"
+  elif [[ "$current" == "0" && -n "$saved" ]]; then
+    current="$saved"
+  fi
   run_pmset sleep 0 disablesleep 1
+  echo "$current" > "$STATE"
   echo "☕️ Lid-closed stay-awake ON (battery)"
   echo "   sleep 0, disablesleep 1 — don't leave this on in a bag"
 }
 
 disable_awake() {
+  local current saved restore
+  current="$(battery_sleep)"
+  saved="$(saved_sleep)"
   if ! is_on; then
-    echo "😴 Lid-closed stay-awake already OFF"
-    return
+    # Already off. The one thing left to fix is a battery timer still at the
+    # 0 a previous session left behind.
+    if [[ -z "$saved" || "$current" != "0" ]]; then
+      rm -f "$STATE"
+      echo "😴 Lid-closed stay-awake already OFF"
+      return
+    fi
   fi
-  local restore="$DEFAULT_SLEEP"
-  if [[ -f "$STATE" ]]; then
-    restore="$(cat "$STATE")"
-    rm -f "$STATE"
+  restore="$saved"
+  if [[ -z "$restore" ]]; then
+    if [[ "$current" =~ ^[1-9][0-9]*$ ]]; then
+      restore="$current"
+    else
+      restore="$DEFAULT_SLEEP"
+    fi
   fi
-  [[ "$restore" =~ ^[0-9]+$ ]] || restore="$DEFAULT_SLEEP"
   run_pmset sleep "$restore" disablesleep 0
+  rm -f "$STATE"
   echo "😴 Lid-closed stay-awake OFF"
   echo "   Restored battery sleep to ${restore} min, disablesleep 0"
 }
@@ -115,6 +159,11 @@ show_status() {
   else
     echo "😴 Lid-closed stay-awake is OFF"
     echo "   battery sleep ${batt} min, disablesleep 0"
+    local saved
+    saved="$(saved_sleep)"
+    if [[ "$batt" == "0" && -n "$saved" ]]; then
+      echo "   Battery sleep was ${saved} min before. Restore it with: lid-awake off"
+    fi
   fi
 }
 
@@ -164,6 +213,8 @@ EOF
 }
 
 menubar_enable() {
+  [[ "$EUID" -ne 0 ]] || die "Run lid-awake menubar enable without sudo. The app installs into your own ~/Applications."
+
   if ! command -v clang >/dev/null || ! xcode-select -p >/dev/null 2>&1; then
     die "Apple Command Line Tools are required to build the menu bar app.
    Install them with: xcode-select --install"
@@ -172,8 +223,10 @@ menubar_enable() {
   local src
   src="$(menubar_src_dir)" || die "Menu bar sources not found. Run this from a lid-awake checkout, or reinstall with make install."
 
-  local script_path
+  local script_path bin_literal
   script_path="$(resolve_script_path)"
+  bin_literal="${script_path//\\/\\\\}"
+  bin_literal="${bin_literal//\"/\\\"}"
 
   local build_dir
   build_dir="$(mktemp -d)"
@@ -191,7 +244,7 @@ menubar_enable() {
       -Wall \
       -Wextra \
       -mmacosx-version-min=13.0 \
-      -DLID_AWAKE_BIN="\"${script_path}\"" \
+      -DLID_AWAKE_BIN="\"${bin_literal}\"" \
       -framework Cocoa \
       -framework CoreImage \
       -framework ServiceManagement \
