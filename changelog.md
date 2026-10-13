@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.0.0] - 2026-10-13
 
 The first release. Lid Awake keeps a MacBook awake with the lid closed, even on battery, from the command line or a native menu bar app, and now keeps itself up to date from GitHub.
 
