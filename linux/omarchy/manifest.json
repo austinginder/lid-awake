@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "lid-awake",
+  "name": "Lid Awake",
+  "version": "__LID_AWAKE_VERSION__",
+  "author": "Austin Ginder",
+  "description": "Keep the laptop awake with the lid closed",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "LidAwake.qml"
+  },
+  "barWidget": {
+    "displayName": "Lid Awake",
+    "description": "Coffee cup: lit while lid-closed stay-awake is on, click to toggle",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

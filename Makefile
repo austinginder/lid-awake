@@ -12,6 +12,10 @@ install:
 	install -m 644 menubar/Sources/main.m $(DESTDIR)$(SHAREDIR)/menubar/Sources/main.m
 	install -m 644 menubar/Resources/Info.plist $(DESTDIR)$(SHAREDIR)/menubar/Resources/Info.plist
 	install -m 644 menubar/Resources/Assets/lid-awake.svg $(DESTDIR)$(SHAREDIR)/menubar/Resources/Assets/lid-awake.svg
+	install -d $(DESTDIR)$(SHAREDIR)/linux/omarchy/i18n
+	install -m 644 linux/omarchy/manifest.json $(DESTDIR)$(SHAREDIR)/linux/omarchy/manifest.json
+	install -m 644 linux/omarchy/LidAwake.qml $(DESTDIR)$(SHAREDIR)/linux/omarchy/LidAwake.qml
+	install -m 644 linux/omarchy/i18n/en.json $(DESTDIR)$(SHAREDIR)/linux/omarchy/i18n/en.json
 
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/lid-awake

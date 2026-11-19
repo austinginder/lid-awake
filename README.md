@@ -71,7 +71,9 @@ lid-awake status   # ON or OFF (also --porcelain)
 
 `on` starts a small user service, `lid-awake.service`, that runs `systemd-inhibit --what=handle-lid-switch:sleep`. While it runs, logind ignores the lid switch and nothing can suspend the laptop. The service outlives the terminal you ran `on` from, and `off` stops it. No setting is changed, so there is nothing to save or restore: if the service stops for any reason (a crash, logging out, a reboot), the laptop goes straight back to its normal lid behaviour. `systemd-inhibit --list` shows the lock while it is held.
 
-Install from the release zip with `make install PREFIX="$HOME/.local"` (no `sudo`; make sure `~/.local/bin` is on your `PATH`), or `sudo make install` for `/usr/local`. The menu bar app is macOS only.
+Install from the release zip with `make install PREFIX="$HOME/.local"` (no `sudo`; make sure `~/.local/bin` is on your `PATH`), or `sudo make install` for `/usr/local`.
+
+On [Omarchy](https://omarchy.org), `lid-awake menubar enable` adds a widget to the bar instead of a menu bar app: a coffee cup, lit while stay-awake is on and dimmed while it is off. Click it to toggle. It is a small Quickshell plugin (`linux/omarchy/`) copied to `~/.config/omarchy/plugins/lid-awake` with this script's path baked in, and it checks `lid-awake status --porcelain` every few seconds, so `lid-awake on` from a terminal shows up there too. `lid-awake menubar disable` removes it. Other Linux desktops get the CLI only.
 
 If something else turns `disablesleep` back off while Lid Awake is on, `lid-awake status` says the battery timer is still at 0, and `lid-awake off` puts your saved timer back.
 

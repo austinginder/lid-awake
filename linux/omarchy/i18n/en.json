@@ -1,0 +1,6 @@
+{
+  "tooltip.on": "Lid Awake is ON: closing the lid won't suspend. Click to turn off. Don't leave it on in a bag.",
+  "tooltip.off": "Lid Awake is off. Click to keep the laptop awake with the lid closed.",
+  "notify.failed": "Lid Awake could not change state",
+  "notify.failedBody": "Run lid-awake in a terminal to see why."
+}

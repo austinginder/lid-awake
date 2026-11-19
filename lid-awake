@@ -11,6 +11,8 @@ else
   UPDATE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/lid-awake/latest-version"
 fi
 LINUX_UNIT="lid-awake"
+LINUX_PLUGIN_ID="lid-awake"
+LINUX_PLUGIN_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$LINUX_PLUGIN_ID"
 UPDATE_INTERVAL=86400
 DEFAULT_SLEEP=5
 MENUBAR_APP_PATH="$HOME/Applications/Lid Awake.app"
@@ -27,7 +29,8 @@ Usage:
   lid-awake update          Install the latest release from GitHub
   lid-awake update --check  Check for a new release without installing
   lid-awake menubar enable  Build, install, and launch the menu bar app
-  lid-awake menubar disable Quit and remove the menu bar app
+                            (Linux: add the Omarchy bar widget)
+  lid-awake menubar disable Quit and remove the menu bar app (or widget)
   lid-awake version         Show the installed version
   lid-awake help            Show this help
 
@@ -37,7 +40,7 @@ sleep timer is saved and restored, AC settings are left alone.
 
 Linux (systemd): no sudo. While on, a systemd inhibitor stops the lid
 switch and anything else from suspending the laptop; off releases it, and
-nothing else is changed. The menu bar app is macOS only.
+nothing else is changed. On Omarchy, "menubar enable" adds a bar widget.
 
 Do not leave this on in a bag — a closed lid traps heat.
 EOF
@@ -346,6 +349,8 @@ update_install() {
   script_path="$(resolve_script_path)"
   script_dir="$(dirname "$script_path")"
   menubar_dir="$(menubar_src_dir)" || menubar_dir=""
+  local linux_dir=""
+  linux_dir="$(linux_src_dir)" && linux_dir="$(dirname "$linux_dir")" || linux_dir=""
 
   if ! version_gt "$latest" "$VERSION"; then
     echo "✅ Lid Awake v${VERSION} is up to date"
@@ -400,7 +405,7 @@ update_install() {
   # running copy keeps reading the file it started from.
   cat > "$tmp/install.sh" <<'INSTALL'
 set -euo pipefail
-src="$1" script="$2" menubar="$3"
+src="$1" script="$2" menubar="$3" linux="${4:-}"
 next="$(dirname "$script")/.lid-awake.next.$$"
 cp "$src/lid-awake" "$next"
 chmod 755 "$next"
@@ -408,22 +413,27 @@ mv -f "$next" "$script"
 if [[ -n "$menubar" ]]; then
   cp -R "$src/menubar/." "$menubar/"
 fi
+if [[ -n "$linux" && -d "$src/linux" ]]; then
+  cp -R "$src/linux/." "$linux/"
+fi
 INSTALL
 
   local needs_admin=0 file
   [[ -w "$script_dir" ]] || needs_admin=1
-  if [[ -n "$menubar_dir" ]]; then
+  local dir
+  for dir in "$menubar_dir" "$linux_dir"; do
+    [[ -n "$dir" ]] || continue
     while IFS= read -r -d '' file; do
       [[ -w "$file" ]] || needs_admin=1
-    done < <(find "$menubar_dir" -print0)
-  fi
+    done < <(find "$dir" -print0)
+  done
 
   echo "📦 Installing to ${script_path}..."
   if ((needs_admin)); then
     run_as_admin "Lid Awake wants to install an update." \
-      /bin/bash "$tmp/install.sh" "$src" "$script_path" "$menubar_dir"
+      /bin/bash "$tmp/install.sh" "$src" "$script_path" "$menubar_dir" "$linux_dir"
   else
-    /bin/bash "$tmp/install.sh" "$src" "$script_path" "$menubar_dir"
+    /bin/bash "$tmp/install.sh" "$src" "$script_path" "$menubar_dir" "$linux_dir"
   fi
   rm -rf "$tmp"
   trap - EXIT
@@ -465,12 +475,90 @@ menubar_src_dir() {
 }
 
 menubar_installed_version() {
+  if [[ "$OS" != "Darwin" ]]; then
+    sed -n 's/^ *"version": *"\(.*\)",*$/\1/p' "$LINUX_PLUGIN_DIR/manifest.json" 2>/dev/null | head -n 1
+    return 0
+  fi
   /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" \
     "$MENUBAR_APP_PATH/Contents/Info.plist" 2>/dev/null || true
 }
 
 menubar_is_enabled() {
+  if [[ "$OS" != "Darwin" ]]; then
+    [[ -f "$LINUX_PLUGIN_DIR/manifest.json" ]]
+    return
+  fi
   [[ -d "$MENUBAR_APP_PATH" ]]
+}
+
+# --- Omarchy bar widget (Linux) -----------------------------------------------
+#
+# On Linux the "menu bar" is a widget in Omarchy's bar (a Quickshell plugin):
+# linux/omarchy/ is copied to ~/.config/omarchy/plugins/lid-awake/ with this
+# script's path and version baked in, then enabled and placed on the right.
+
+linux_src_dir() {
+  local script_dir
+  script_dir="$(cd "$(dirname "$(resolve_script_path)")" && pwd)"
+  if [[ -f "$script_dir/linux/omarchy/LidAwake.qml" ]]; then
+    echo "$script_dir/linux/omarchy"
+    return
+  fi
+  if [[ -f "$script_dir/../share/lid-awake/linux/omarchy/LidAwake.qml" ]]; then
+    (cd "$script_dir/../share/lid-awake/linux/omarchy" && pwd)
+    return
+  fi
+  return 1
+}
+
+linux_menubar_enable() {
+  [[ "$EUID" -ne 0 ]] || die "Run lid-awake menubar enable without sudo. The widget installs into your own ~/.config."
+  command -v omarchy >/dev/null && command -v omarchy-shell >/dev/null \
+    || die "The Linux menu bar is a widget for Omarchy's bar (https://omarchy.org). Without Omarchy, use lid-awake on / off / status."
+  local src
+  src="$(linux_src_dir)" || die "Widget sources not found. Run this from a lid-awake checkout, or reinstall with make install."
+
+  # The path goes into a QML string literal: escape backslashes and quotes.
+  local script_path bin_literal
+  script_path="$(resolve_script_path)"
+  bin_literal="${script_path//\\/\\\\}"
+  bin_literal="${bin_literal//\"/\\\"}"
+  bin_literal="${bin_literal//&/\\&}"
+
+  echo "🛠️  Installing the Lid Awake bar widget v${VERSION}..."
+  rm -rf "$LINUX_PLUGIN_DIR"
+  mkdir -p "$LINUX_PLUGIN_DIR"
+  cp -R "$src/." "$LINUX_PLUGIN_DIR/"
+  sed -i "s|__LID_AWAKE_BIN__|${bin_literal//|/\\|}|g" "$LINUX_PLUGIN_DIR/LidAwake.qml"
+  sed -i "s/__LID_AWAKE_VERSION__/${VERSION}/g" "$LINUX_PLUGIN_DIR/manifest.json"
+
+  omarchy plugin validate "$LINUX_PLUGIN_DIR" >/dev/null || die "Omarchy rejected the widget (omarchy plugin validate $LINUX_PLUGIN_DIR)."
+  # The rescan returns before the shell has found the plugin, and enabling an
+  # unknown id fails: wait (up to ~5 s) until the shell lists it.
+  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  local i
+  for i in $(seq 1 25); do
+    omarchy plugin list 2>/dev/null | awk -v id="$LINUX_PLUGIN_ID" '$1 == id { found = 1 } END { exit !found }' && break
+    sleep 0.2
+  done
+  omarchy plugin enable "$LINUX_PLUGIN_ID" --section right >/dev/null \
+    || die "Omarchy could not enable the widget. Try: omarchy plugin enable $LINUX_PLUGIN_ID --section right"
+
+  echo ""
+  echo "✅ Lid Awake is in the Omarchy bar"
+  echo "   Look for the coffee-cup icon on the right: lit means on. Click it to toggle."
+  echo "   Remove it anytime with: lid-awake menubar disable"
+}
+
+linux_menubar_disable() {
+  if ! menubar_is_enabled; then
+    echo "The bar widget is not enabled."
+    return 0
+  fi
+  command -v omarchy >/dev/null && omarchy plugin disable "$LINUX_PLUGIN_ID" >/dev/null 2>&1 || true
+  rm -rf "$LINUX_PLUGIN_DIR"
+  command -v omarchy-shell >/dev/null && omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  echo "✅ Lid Awake bar widget disabled and removed."
 }
 
 menubar_usage() {
@@ -600,7 +688,22 @@ menubar_disable() {
 }
 
 menubar_cmd() {
-  [[ "$OS" == "Darwin" ]] || die "The menu bar app is macOS only."
+  if [[ "$OS" != "Darwin" ]]; then
+    case "${1:-}" in
+      enable) linux_menubar_enable ;;
+      disable) linux_menubar_disable ;;
+      help|-h|--help|"")
+        echo "Usage: lid-awake menubar enable|disable"
+        echo ""
+        echo "On Linux the menu bar is a widget in Omarchy's bar: a coffee cup, lit while"
+        echo "lid-closed stay-awake is on. Click it to toggle."
+        echo ""
+        if menubar_is_enabled; then echo "Currently: enabled (v$(menubar_installed_version))"; else echo "Currently: disabled"; fi
+        ;;
+      *) echo "Usage: lid-awake menubar enable|disable" >&2; exit 1 ;;
+    esac
+    return
+  fi
   case "${1:-}" in
     enable) menubar_enable ;;
     disable) menubar_disable ;;
