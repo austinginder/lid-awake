@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.0] - 2026-11-18
+
+Lid Awake now runs on Linux too: the same commands keep a laptop awake with the lid closed through a systemd inhibitor lock, with no `sudo`, and on Omarchy a coffee cup in the bar shows and toggles it.
 
 ### ✨ New Features
 

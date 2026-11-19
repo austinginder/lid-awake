@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 REPO="austinginder/lid-awake"
 STATE="${LID_AWAKE_STATE:-$HOME/.lid-awake}"
 OS="$(uname -s)"
