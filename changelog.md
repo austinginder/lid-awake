@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### ✨ New Features
+
+* **Linux support:** `lid-awake on`, `off`, `status` (and `--porcelain`), the toggle, `version` and `update` now work on Linux with systemd, without `sudo`. `on` starts a user service (`lid-awake.service`) that holds a systemd inhibitor lock on the lid switch and on sleep, so closing the lid does nothing and nothing else can suspend the laptop; `off` stops it. Nothing is changed or saved, so a crash, logout or reboot puts the normal lid behaviour straight back. Update checks cache under `~/.cache/lid-awake`. The menu bar app stays macOS only.
+
 ## [1.0.0] - 2026-10-13
 
 The first release. Lid Awake keeps a MacBook awake with the lid closed, even on battery, from the command line or a native menu bar app, and now keeps itself up to date from GitHub.

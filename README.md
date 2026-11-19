@@ -1,8 +1,8 @@
 # lid-awake
 
-Keep a MacBook awake with the lid closed, even on battery.
+Keep a laptop awake with the lid closed, even on battery. Runs on macOS and on Linux with systemd.
 
-`caffeinate` cannot do this. Closing the lid is a hardware event, not idle sleep. Lid Awake turns on macOS's `pmset disablesleep`, sets the battery sleep timer to never, and puts your previous timer back when you run it again.
+`caffeinate` cannot do this. Closing the lid is a hardware event, not idle sleep. On a Mac, Lid Awake turns on macOS's `pmset disablesleep`, sets the battery sleep timer to never, and puts your previous timer back when you run it again. On Linux it holds a systemd inhibitor lock instead (see [Linux](#linux)).
 
 ## Install
 
@@ -59,6 +59,20 @@ Run it again to restore:
 
 `pmset` needs admin access. In Terminal that is `sudo`. From the menu bar, macOS shows a password dialog.
 
+## Linux
+
+The same commands work on any Linux with systemd (logind), with no `sudo`:
+
+```bash
+lid-awake on       # hold the inhibitor: closing the lid does nothing
+lid-awake off      # release it: closing the lid suspends as usual
+lid-awake status   # ON or OFF (also --porcelain)
+```
+
+`on` starts a small user service, `lid-awake.service`, that runs `systemd-inhibit --what=handle-lid-switch:sleep`. While it runs, logind ignores the lid switch and nothing can suspend the laptop. The service outlives the terminal you ran `on` from, and `off` stops it. No setting is changed, so there is nothing to save or restore: if the service stops for any reason (a crash, logging out, a reboot), the laptop goes straight back to its normal lid behaviour. `systemd-inhibit --list` shows the lock while it is held.
+
+Install from the release zip with `make install PREFIX="$HOME/.local"` (no `sudo`; make sure `~/.local/bin` is on your `PATH`), or `sudo make install` for `/usr/local`. The menu bar app is macOS only.
+
 If something else turns `disablesleep` back off while Lid Awake is on, `lid-awake status` says the battery timer is still at 0, and `lid-awake off` puts your saved timer back.
 
 ## Menu bar
@@ -95,7 +109,7 @@ Nothing else is sent anywhere.
 
 A closed lid traps heat. Use this for a specific job, then turn it off. Do not leave it enabled in a bag.
 
-`disablesleep` is a system-wide switch: while stay-awake is on, the Mac does not sleep at all, on battery or on power. The only per-power-source setting Lid Awake changes is the battery sleep timer, which it saves and restores. AC sleep settings are never touched.
+On a Mac, `disablesleep` is a system-wide switch: while stay-awake is on, the Mac does not sleep at all, on battery or on power. The only per-power-source setting Lid Awake changes is the battery sleep timer, which it saves and restores. AC sleep settings are never touched.
 
 ## License
 
